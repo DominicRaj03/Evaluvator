@@ -4,175 +4,135 @@ import google.generativeai as genai
 import json
 from io import BytesIO
 
-# --- 1. Security & Styling Configuration ---
+# --- 1. Security & Styling ---
 def check_password():
-    """Returns True if the user had the correct password."""
-    
-    # Professional Styling for Login Page
     st.markdown("""
         <style>
         .login-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 40px;
-            background-color: #1E1E2E;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
-            max-width: 400px;
-            margin: auto;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 40px; background-color: #1E1E2E; border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5); max-width: 400px; margin: auto;
         }
-        .stTextInput > div > div > input {
-            background-color: #2D2D44;
-            color: white;
-            border: 1px solid #3E3E5E;
-        }
+        .stTextInput > div > div > input { background-color: #2D2D44; color: white; border: 1px solid #3E3E5E; }
         </style>
     """, unsafe_allow_html=True)
 
-    def password_entered():
-        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
-
     if "password_correct" not in st.session_state:
-        # Centered Login UI
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.markdown('<div class="login-container">', unsafe_allow_html=True)
             st.title("🎯 Jarvis AI")
-            st.subheader("US & Test Evaluator")
-            st.text_input("Access Key", type="password", on_change=password_entered, key="password")
+            st.text_input("Access Key", type="password", on_change=lambda: st.session_state.update({"password_correct": st.session_state["password"] == st.secrets["APP_PASSWORD"]}), key="password")
             st.markdown('</div>', unsafe_allow_html=True)
         return False
-    elif not st.session_state["password_correct"]:
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.markdown('<div class="login-container">', unsafe_allow_html=True)
-            st.title("🎯 Jarvis AI")
-            st.text_input("Access Key", type="password", on_change=password_entered, key="password")
-            st.error("❌ Access Denied")
-            st.markdown('</div>', unsafe_allow_html=True)
-        return False
-    return True
+    return st.session_state["password_correct"]
 
-# --- 2. Main Application Logic ---
+# --- 2. Main App Logic ---
 st.set_page_config(page_title="Jarvis - US Evaluator", layout="wide")
 
 if check_password():
+    # AI Setup
     try:
-        if "GEMINI_API_KEY" in st.secrets:
-            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        else:
-            st.error("Missing GEMINI_API_KEY in Streamlit Secrets!")
-    except Exception as e:
-        st.error(f"Initialization Error: {str(e)}")
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    except:
+        st.error("Check Secrets for API Key!")
 
-    def call_gemini_ai(prompt):
+    def call_ai(prompt):
         try:
             response = model.generate_content(prompt)
-            raw_text = response.text.strip().replace('```json', '').replace('```', '')
-            return json.loads(raw_text)
-        except Exception:
-            return None
+            clean = response.text.strip().replace('```json', '').replace('```', '')
+            return json.loads(clean)
+        except: return None
 
-    # --- UI Layout ---
-    st.sidebar.title("🎯 US Evaluator")
+    # Sidebar
     if st.sidebar.button("Log Out"):
         st.session_state["password_correct"] = False
         st.rerun()
-    
-    st.sidebar.markdown("---")
-    st.sidebar.info("🚀 **Mode: Integrated Gemini AI**")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📖 User Story", "🧪 Test Case", "📝 Generator", "📊 Bulk Stories", "📋 Bulk Tests"
-    ])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📖 User Story", "🧪 Test Case", "📝 Generator", "📊 Bulk Stories", "📋 Bulk Tests"])
 
-    # ============= TAB 1: USER STORY =============
+    # --- Tab 1 & 2: Single Evaluators ---
     with tab1:
         st.title("📖 User Story Evaluator")
-        user_story = st.text_area("Enter User Story", key="us_input_main", height=150)
-        if st.button("🚀 Evaluate", key="btn_us_eval", type="primary"):
-            if user_story:
-                with st.spinner("Analyzing..."):
-                    prompt = f"Analyze this User Story based on INVEST criteria: '{user_story}'. Return ONLY JSON with: totalScore(30), grade, status, executiveSummary(dict with readinessScore, recommendation), parameters(list of dicts with name, score, finding)."
-                    data = call_gemini_ai(prompt)
-                    if data:
-                        st.metric("Score", f"{data.get('totalScore')}/30")
-                        st.success(data.get('executiveSummary', {}).get('recommendation'))
-                        for p in data.get('parameters', []):
-                            with st.expander(f"{p['name']} - {p['score']}/5"):
-                                st.write(p['finding'])
+        us_text = st.text_area("Enter Story", key="us_single")
+        if st.button("Evaluate Story", type="primary"):
+            res = call_ai(f"Evaluate: {us_text}. Return JSON: totalScore, grade, status, recommendation.")
+            if res:
+                st.metric("Score", f"{res['totalScore']}/30")
+                st.info(res['recommendation'])
 
-    # ============= TAB 2: TEST CASE =============
     with tab2:
         st.title("🧪 Test Case Evaluator")
-        tc_input = st.text_area("Enter Test Case", key="tc_input_main", height=150)
-        if st.button("🚀 Evaluate", key="btn_tc_eval", type="primary"):
-            if tc_input:
-                with st.spinner("Analyzing..."):
-                    prompt = f"Evaluate this Test Case: '{tc_input}'. Return ONLY JSON with totalScore(25), status, and parameters(list with name, score, finding)."
-                    data = call_gemini_ai(prompt)
-                    if data:
-                        st.metric("Quality Score", f"{data.get('totalScore')}/25")
-                        st.table(data.get('parameters'))
+        tc_text = st.text_area("Enter Test Case", key="tc_single")
+        if st.button("Evaluate Test Case", type="primary"):
+            res = call_ai(f"Evaluate: {tc_text}. Return JSON: totalScore, status, parameters.")
+            if res:
+                st.metric("Quality", f"{res['totalScore']}/25")
+                st.table(res['parameters'])
 
-    # ============= TAB 3: GENERATOR =============
+    # --- Tab 3: Generator ---
     with tab3:
         st.title("📝 Test Case Generator")
-        feat_desc = st.text_area("Describe Feature", key="gen_input_main", height=150)
-        if st.button("✨ Generate", key="btn_gen_main", type="primary"):
-            if feat_desc:
-                with st.spinner("Generating..."):
-                    prompt = f"Generate 3 test cases for: '{feat_desc}'. Return ONLY JSON: {{'testCases': [{{'name', 'steps', 'expected'}}]}}"
-                    data = call_gemini_ai(prompt)
-                    if data:
-                        for tc in data.get('testCases', []):
-                            with st.expander(f"✅ {tc['name']}"):
-                                st.write(tc['steps'])
-                                st.write(f"**Expected:** {tc['expected']}")
+        feat = st.text_area("Feature Description")
+        if st.button("Generate"):
+            res = call_ai(f"Generate 3 test cases for {feat}. Return JSON: testCases: [{{name, steps, expected}}]")
+            if res:
+                for t in res['testCases']:
+                    with st.expander(t['name']):
+                        st.write(t['steps'])
+                        st.caption(f"Expected: {t['expected']}")
 
-    # ============= TAB 4: BULK USER STORIES =============
+    # --- Tab 4: Bulk Stories with SEARCH ---
     with tab4:
-        st.title("📊 Bulk User Story Evaluator")
-        template_us = pd.DataFrame({"User Story": ["As a user, I want to login so I can see my dashboard.", "As a guest, I want to browse products."] })
-        st.download_button("📥 Download Template", template_us.to_csv(index=False), "us_template.csv", "text/csv")
-        uploaded_us = st.file_uploader("Upload CSV", type=['csv'], key="bulk_us_uploader")
-        if uploaded_us:
-            df = pd.read_csv(uploaded_us)
-            if st.button("🚀 Process Bulk Stories"):
+        st.title("📊 Bulk User Stories")
+        # Template
+        st.download_button("📥 Template", pd.DataFrame({"User Story": ["As a..."]}).to_csv(index=False), "template.csv")
+        
+        up_us = st.file_uploader("Upload CSV", type=['csv'], key="up_us")
+        if up_us:
+            df = pd.read_csv(up_us)
+            
+            # --- LIVE SEARCH ---
+            search = st.text_input("🔍 Search/Filter Stories", key="search_us")
+            filtered_df = df[df.iloc[:,0].str.contains(search, case=False, na=False)] if search else df
+            
+            st.write(f"Filtered: {len(filtered_df)} rows")
+            st.dataframe(filtered_df, use_container_width=True)
+            
+            if st.button("🚀 Process Filtered"):
                 results = []
                 bar = st.progress(0)
-                for i, row in df.iterrows():
-                    story = str(row.iloc[0])
-                    res = call_gemini_ai(f"Score this User Story: '{story}'. Return ONLY JSON: {{'score':(int/30), 'recommendation':(str)}}")
-                    results.append({"User Story": story, "Score": res.get('score') if res else "N/A", "Recommendation": res.get('recommendation') if res else "Error"})
-                    bar.progress((i + 1) / len(df))
+                for i, row in filtered_df.iterrows():
+                    data = call_ai(f"Score: {row.iloc[0]}. Return JSON: score, recommendation")
+                    results.append({"Story": row.iloc[0], "Score": data.get('score', 0), "Note": data.get('recommendation', 'Error')})
+                    bar.progress((results.__len__()) / len(filtered_df))
+                
                 res_df = pd.DataFrame(results)
                 st.dataframe(res_df)
-                st.download_button("📥 Download Results", res_df.to_csv(index=False), "us_results.csv", "text/csv")
+                st.download_button("📥 Download Results", res_df.to_csv(index=False), "results.csv")
 
-    # ============= TAB 5: BULK TEST CASES =============
+    # --- Tab 5: Bulk Test Cases with SEARCH ---
     with tab5:
-        st.title("📋 Bulk Test Case Evaluator")
-        template_tc = pd.DataFrame({"Test Case": ["1. Open App. 2. Click Login. Expected: Login Screen.", "1. Enter Wrong Pass. Expected: Error Message."] })
-        st.download_button("📥 Download Template", template_tc.to_csv(index=False), "tc_template.csv", "text/csv")
-        uploaded_tc = st.file_uploader("Upload CSV", type=['csv'], key="bulk_tc_uploader")
-        if uploaded_tc:
-            df_tc = pd.read_csv(uploaded_tc)
-            if st.button("🚀 Process Bulk Tests"):
+        st.title("📋 Bulk Test Cases")
+        st.download_button("📥 Template", pd.DataFrame({"Test Case": ["1. Open..."]}).to_csv(index=False), "template_tc.csv")
+        
+        up_tc = st.file_uploader("Upload CSV", type=['csv'], key="up_tc")
+        if up_tc:
+            df_tc = pd.read_csv(up_tc)
+            
+            # --- LIVE SEARCH ---
+            search_tc = st.text_input("🔍 Search/Filter Tests", key="search_tc")
+            filtered_tc = df_tc[df_tc.iloc[:,0].str.contains(search_tc, case=False, na=False)] if search_tc else df_tc
+            
+            st.dataframe(filtered_tc, use_container_width=True)
+            
+            if st.button("🚀 Process Filtered Tests"):
                 results_tc = []
                 bar_tc = st.progress(0)
-                for i, row in df_tc.iterrows():
-                    tc = str(row.iloc[0])
-                    res = call_gemini_ai(f"Score this Test Case: '{tc}'. Return ONLY JSON: {{'score':(int/25), 'status':(str)}}")
-                    results_tc.append({"Test Case": tc, "Score": res.get('score') if res else "N/A", "Status": res.get('status') if res else "Error"})
-                    bar_tc.progress((i + 1) / len(df_tc))
-                res_tc_df = pd.DataFrame(results_tc)
-                st.dataframe(res_tc_df)
-                st.download_button("📥 Download Results", res_tc_df.to_csv(index=False), "tc_results.csv", "text/csv")
+                for i, row in filtered_tc.iterrows():
+                    data = call_ai(f"Score: {row.iloc[0]}. Return JSON: score, status")
+                    results_tc.append({"Test Case": row.iloc[0], "Score": data.get('score', 0), "Status": data.get('status', 'Error')})
+                    bar_tc.progress((results_tc.__len__()) / len(filtered_tc))
+                
+                st.dataframe(pd.DataFrame(results_tc))
