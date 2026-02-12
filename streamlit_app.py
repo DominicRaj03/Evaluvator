@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
+from groq import Groq
 import json
 import re
+import time
 
 # --- 1. Security & Styling ---
 def check_password():
@@ -15,6 +17,7 @@ def check_password():
         }
         .status-header { display: flex; align-items: center; justify-content: space-between; padding: 10px; background: #262730; border-radius: 8px; margin-bottom: 20px; }
         .status-dot { height: 12px; width: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .history-item { padding: 8px; border-bottom: 1px solid #3E3E5E; font-size: 0.8rem; color: #BBB; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -28,38 +31,65 @@ def check_password():
         return False
     return st.session_state["password_correct"]
 
-# --- 2. Main Logic ---
+# --- 2. Multi-Provider AI Wrapper ---
+def call_ai(prompt, provider, model_name, is_json=True):
+    start_time = time.time()
+    try:
+        if provider == "Gemini":
+            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+        else:
+            client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+            chat_completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model=model_name,
+            )
+            text = chat_completion.choices[0].message.content.strip()
+
+        latency = int((time.time() - start_time) * 1000)
+        st.session_state.last_latency = latency
+        
+        # Log to history
+        log_entry = {"time": time.strftime("%H:%M:%S"), "provider": provider, "latency": f"{latency}ms"}
+        if "latency_history" not in st.session_state: st.session_state.latency_history = []
+        st.session_state.latency_history.insert(0, log_entry)
+        st.session_state.latency_history = st.session_state.latency_history[:10]
+
+        if is_json:
+            json_match = re.search(r"\{.*\}", text, re.DOTALL)
+            return json.loads(json_match.group(0)) if json_match else json.loads(text)
+        return text
+    except Exception as e:
+        st.session_state.last_err = str(e)
+        return None
+
+# --- 3. Main Logic ---
 st.set_page_config(page_title="Jarvis Evaluator", layout="wide")
 
 if check_password():
-    # Sidebar Configuration
     with st.sidebar:
         st.title("⚙️ Settings")
-        selected_model = st.selectbox("Select AI Model", ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest"])
-        if st.button("🛠️ Refresh Connection"): st.rerun()
+        provider = st.radio("Select Provider", ["Gemini", "Groq"])
+        models = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest"] if provider == "Gemini" else ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"]
+        selected_model = st.selectbox("Select AI Model", models)
+        
         st.markdown("---")
+        st.subheader("⚡ Performance")
+        st.metric("Last Latency", f"{st.session_state.get('last_latency', 0)} ms")
+        
+        with st.expander("🕒 Latency Log"):
+            for entry in st.session_state.get("latency_history", []):
+                st.markdown(f"<div class='history-item'>{entry['time']} - {entry['provider']}: {entry['latency']}</div>", unsafe_allow_html=True)
+
+        if st.button("🛠️ Refresh Connection"): st.rerun()
         if st.button("🧹 Clear All Data"):
             st.session_state.clear()
             st.rerun()
 
-    # AI Wrapper
-    def call_ai(prompt, is_json=True):
-        try:
-            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-            model = genai.GenerativeModel(selected_model)
-            response = model.generate_content(prompt)
-            if not response or not hasattr(response, 'text'): return None
-            text = response.text.strip()
-            if is_json:
-                json_match = re.search(r"\{.*\}", text, re.DOTALL)
-                return json.loads(json_match.group(0)) if json_match else json.loads(text)
-            return text
-        except Exception as e:
-            st.session_state.last_err = str(e)
-            return None
-
-    # Status Check
-    ping = call_ai("Ping", is_json=False)
+    # Status Monitor
+    ping = call_ai("Ping", provider, selected_model, is_json=False)
     is_active = ping is not None
     
     st.markdown(f"""
@@ -72,78 +102,70 @@ if check_password():
         </div>
     """, unsafe_allow_html=True)
 
-    if not is_active:
-        st.error(f"⚠️ Connection Failed: {st.session_state.get('last_err', 'Check API Key in Secrets')}")
-
     tabs = st.tabs(["📖 User Story", "🧪 Test Case", "📝 Generator", "📊 Bulk Stories", "📋 Bulk Tests"])
 
-    # --- Tab 1: User Story ---
+    # --- Individual Tabs ---
     with tabs[0]:
-        st.title("📖 User Story Evaluator")
-        us_val = st.text_area("Enter User Story", height=150, key="us_in")
-        if st.button("Evaluate User Story", type="primary"):
-            if is_active:
-                with st.spinner("Analyzing..."):
-                    res = call_ai(f"Evaluate US: '{us_val}'. Return JSON: {{'score': 20, 'feedback': 'str', 'confidence': 90}}")
-                    if res:
-                        st.metric("Score", f"{res.get('score')}/30")
-                        st.success(res.get('feedback'))
-            else: st.warning("Cannot evaluate while offline.")
+        us_val = st.text_area("Input User Story", height=150, key="us_single")
+        if st.button("Evaluate Story", type="primary") and is_active:
+            res = call_ai(f"Evaluate US: '{us_val}'. Return JSON: {{'score': 20, 'feedback': 'str'}}", provider, selected_model)
+            if res:
+                st.metric("Score", f"{res.get('score')}/30")
+                st.success(res.get('feedback'))
 
-    # --- Tab 2: Test Case ---
     with tabs[1]:
-        st.title("🧪 Test Case Evaluator")
-        tc_val = st.text_area("Enter Test Case", height=150, key="tc_in")
-        if st.button("Evaluate Test Case", type="primary"):
-            if is_active:
-                with st.spinner("Analyzing..."):
-                    res = call_ai(f"Evaluate TC: '{tc_val}'. Return JSON: {{'score': 15, 'status': 'str'}}")
-                    if res:
-                        st.metric("Quality", f"{res.get('score')}/25")
-                        st.info(res.get('status'))
-            else: st.warning("Cannot evaluate while offline.")
+        tc_val = st.text_area("Input Test Case", height=150, key="tc_single")
+        if st.button("Analyze Case", type="primary") and is_active:
+            res = call_ai(f"Evaluate TC: '{tc_val}'. Return JSON: {{'score': 15, 'status': 'str'}}", provider, selected_model)
+            if res:
+                st.metric("Quality", f"{res.get('score')}/25")
+                st.info(res.get('status'))
 
-    # --- Tab 3: Generator ---
     with tabs[2]:
-        st.title("📝 Test Case Generator")
-        feat = st.text_area("Feature Description", key="feat_in")
-        if st.button("Generate Tests"):
-            if is_active:
-                with st.spinner("Generating..."):
-                    res = call_ai(f"Generate 3 tests for: '{feat}'. Return JSON: {{'testCases': [{{'name': 'str', 'steps': 'str'}}]}}")
-                    if res:
-                        for t in res.get('testCases', []):
-                            with st.expander(t['name']): st.write(t['steps'])
-            else: st.warning("Cannot generate while offline.")
+        feat = st.text_area("Feature Name", key="gen_feat")
+        if st.button("Generate Tests") and is_active:
+            res = call_ai(f"Generate 3 tests for: '{feat}'. Return JSON: {{'testCases': [{{'name': 'str', 'steps': 'str'}}]}}", provider, selected_model)
+            if res:
+                for t in res.get('testCases', []):
+                    with st.expander(t['name']): st.write(t['steps'])
 
-    # --- Tab 4: Bulk Stories ---
+    # --- Bulk Processing ---
     with tabs[3]:
         st.title("📊 Bulk User Stories")
-        up_us = st.file_uploader("Upload Stories CSV", type=['csv'], key="bulkus_up")
+        up_us = st.file_uploader("Upload CSV", type=['csv'], key="bulk_us_up")
         if up_us:
             df = pd.read_csv(up_us)
             df.insert(0, "Select", True)
+            if st.button("🪄 Auto-Format Selected"):
+                for i, row in df.iterrows():
+                    if row["Select"]:
+                        fmt = call_ai(f"Rewrite as 'As a... I want... So that...': {row.iloc[2]}", provider, selected_model, is_json=False)
+                        if fmt: df.iloc[i, 2] = fmt
+                st.rerun()
             edited_df = st.data_editor(df, hide_index=True)
-            if st.button("🚀 Process Selected Stories") and is_active:
-                selected = edited_df[edited_df["Select"] == True]
+            if st.button("🚀 Process Stories") and is_active:
+                sel = edited_df[edited_df["Select"]]
                 results = []
-                for _, row in selected.iterrows():
-                    out = call_ai(f"Score Story: {row.iloc[1]}. Return JSON: {{'score': 10}}")
-                    results.append({"Story": row.iloc[1], "Score": out.get('score', 0) if out else 0})
-                st.dataframe(pd.DataFrame(results))
+                for _, row in sel.iterrows():
+                    out = call_ai(f"Score: {row.iloc[2]}", provider, selected_model)
+                    results.append({"Story": row.iloc[2], "Score": out.get('score', 0) if out else 0})
+                res_df = pd.DataFrame(results)
+                st.dataframe(res_df)
+                st.download_button("📥 Download", res_df.to_csv(index=False), "us_results.csv")
 
-    # --- Tab 5: Bulk Tests ---
     with tabs[4]:
         st.title("📋 Bulk Test Cases")
-        up_tc = st.file_uploader("Upload Tests CSV", type=['csv'], key="bulktc_up")
+        up_tc = st.file_uploader("Upload CSV", type=['csv'], key="bulk_tc_up")
         if up_tc:
             df_t = pd.read_csv(up_tc)
             df_t.insert(0, "Select", True)
             edited_t = st.data_editor(df_t, hide_index=True)
-            if st.button("🚀 Process Selected Tests") and is_active:
-                selected_t = edited_t[edited_t["Select"] == True]
+            if st.button("🚀 Process Tests") and is_active:
+                sel_t = edited_t[edited_t["Select"]]
                 results_t = []
-                for _, row in selected_t.iterrows():
-                    out = call_ai(f"Score Test: {row.iloc[1]}. Return JSON: {{'score': 10}}")
-                    results_t.append({"Test": row.iloc[1], "Score": out.get('score', 0) if out else 0})
-                st.dataframe(pd.DataFrame(results_t))
+                for _, row in sel_t.iterrows():
+                    out = call_ai(f"Score: {row.iloc[2]}", provider, selected_model)
+                    results_t.append({"Test": row.iloc[2], "Score": out.get('score', 0) if out else 0})
+                res_t_df = pd.DataFrame(results_t)
+                st.dataframe(res_t_df)
+                st.download_button("📥 Download", res_t_df.to_csv(index=False), "tc_results.csv")
