@@ -16,6 +16,7 @@ def check_password():
         }
         .stTextInput > div > div > input { background-color: #2D2D44; color: white; border: 1px solid #3E3E5E; }
         .stButton>button { width: 100%; border-radius: 5px; }
+        .history-item { padding: 10px; border-bottom: 1px solid #3E3E5E; font-size: 0.85rem; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -33,7 +34,9 @@ def check_password():
 st.set_page_config(page_title="Jarvis - US Evaluator", layout="wide")
 
 if check_password():
-    # Model Configuration
+    if "history" not in st.session_state:
+        st.session_state.history = []
+
     try:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
@@ -44,7 +47,6 @@ if check_password():
         try:
             response = model.generate_content(prompt)
             text = response.text.strip()
-            # Regex to extract JSON block even if AI adds conversational text
             json_match = re.search(r"\{.*\}", text, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(0))
@@ -52,70 +54,75 @@ if check_password():
         except Exception:
             return None
 
-    # --- Sidebar Controls ---
+    def add_to_history(item_type, title, score):
+        st.session_state.history.insert(0, {"type": item_type, "title": str(title)[:30] + "...", "score": score})
+        if len(st.session_state.history) > 5:
+            st.session_state.history.pop()
+
+    # --- Sidebar ---
     st.sidebar.title("🛠️ Controls")
     if st.sidebar.button("🧹 Clear All Data"):
-        for key in st.session_state.keys():
-            del st.session_state[key]
+        for key in list(st.session_state.keys()): del st.session_state[key]
         st.rerun()
-        
     if st.sidebar.button("🚪 Log Out"):
         st.session_state["password_correct"] = False
         st.rerun()
 
+    st.sidebar.markdown("---")
+    st.sidebar.title("🕒 Recent History")
+    for item in st.session_state.history:
+        st.sidebar.markdown(f"<div class='history-item'><b>{item['type']}</b><br>{item['title']}<br>Result: <code>{item['score']}</code></div>", unsafe_allow_html=True)
+
     tabs = st.tabs(["📖 User Story", "🧪 Test Case", "📝 Generator", "📊 Bulk Stories", "📋 Bulk Tests"])
 
-    # ============= TAB 1: USER STORY =============
+    # --- Tab 1: User Story ---
     with tabs[0]:
         st.title("📖 User Story Evaluator")
         us_text = st.text_area("Enter User Story", key="us_single", height=150)
         if st.button("Evaluate User Story", type="primary"):
             if us_text:
                 with st.spinner("AI is evaluating..."):
-                    prompt = f"""Evaluate this User Story: '{us_text}'. Return ONLY JSON: 
-                    {{"totalScore": 0-30, "grade": "string", "status": "string", "recommendation": "string", 
-                    "invest": {{"Independent": 0-5, "Negotiable": 0-5, "Valuable": 0-5, "Estimable": 0-5, "Small": 0-5, "Testable": 0-5}}}}"""
+                    prompt = f"Evaluate this User Story: '{us_text}'. Return ONLY JSON: {{ 'totalScore': 24, 'grade': 'B+', 'status': 'Ready', 'recommendation': 'string', 'invest': {{ 'Independent': 5, 'Negotiable': 5, 'Valuable': 5, 'Estimable': 5, 'Small': 5, 'Testable': 5 }} }}"
                     data = call_ai(prompt)
                     if data:
+                        add_to_history("📖 US", us_text, f"{data.get('totalScore')}/30")
                         c1, c2, c3 = st.columns(3)
-                        c1.metric("Score", f"{data.get('totalScore')}/30")
-                        c2.metric("Grade", data.get('grade'))
-                        c3.metric("Status", data.get('status'))
+                        c1.metric("Score", f"{data.get('totalScore')}/30"); c2.metric("Grade", data.get('grade')); c3.metric("Status", data.get('status'))
                         st.success(data.get('recommendation'))
-                        st.subheader("INVEST Breakdown")
                         cols = st.columns(6)
-                        for i, (k, v) in enumerate(data.get('invest', {}).items()):
-                            cols[i].metric(k, f"{v}/5")
-                    else:
-                        st.error("The AI returned an unexpected format. Please try again.")
+                        for i, (k, v) in enumerate(data.get('invest', {}).items()): cols[i].metric(k, f"{v}/5")
 
-    # ============= TAB 2: TEST CASE =============
+    # --- Tab 2: Test Case ---
     with tabs[1]:
         st.title("🧪 Test Case Evaluator")
         tc_text = st.text_area("Enter Test Case", key="tc_single", height=150)
         if st.button("Evaluate Test Case", type="primary"):
             if tc_text:
                 with st.spinner("Analyzing..."):
-                    prompt = f"Evaluate Test Case: '{tc_text}'. Return ONLY JSON: {{"totalScore": 0-25, "status": "string", "parameters": [{{"name": "str", "score": 0-5, "finding": "str"}}]}}"
+                    prompt = f"Evaluate Test Case: '{tc_text}'. Return ONLY JSON: {{ \"totalScore\": 20, \"status\": \"Pass\", \"parameters\": [{{ \"name\": \"Clarity\", \"score\": 5, \"finding\": \"Good\" }}] }}"
                     data = call_ai(prompt)
                     if data:
+                        add_to_history("🧪 TC", tc_text, f"{data.get('totalScore')}/25")
                         st.metric("Quality Score", f"{data.get('totalScore')}/25")
                         st.table(data.get('parameters'))
 
-    # ============= TAB 3: GENERATOR =============
+    # --- Tab 3: Generator (With Copy Feature) ---
     with tabs[2]:
         st.title("📝 Test Case Generator")
         feat = st.text_area("Feature Description")
         if st.button("Generate Test Cases"):
-            prompt = f"Generate 3 test cases for: '{feat}'. Return ONLY JSON: {{'testCases': [{{'name':'str', 'steps':'str', 'expected':'str'}}]}}"
-            data = call_ai(prompt)
-            if data:
-                for t in data.get('testCases', []):
-                    with st.expander(t['name']):
-                        st.write(f"**Steps:**\n{t['steps']}")
-                        st.caption(f"**Expected:** {t['expected']}")
+            with st.spinner("Generating..."):
+                prompt = f"Generate 3 detailed test cases for: '{feat}'. Return ONLY JSON: {{ \"testCases\": [{{ \"name\": \"str\", \"steps\": \"str\", \"expected\": \"str\" }}] }}"
+                data = call_ai(prompt)
+                if data:
+                    add_to_history("📝 GEN", feat, "Generated")
+                    for t in data.get('testCases', []):
+                        with st.expander(t['name']):
+                            full_tc = f"Name: {t['name']}\nSteps:\n{t['steps']}\nExpected: {t['expected']}"
+                            st.write("**Click the icon in the top right of the box below to copy:**")
+                            st.code(full_tc, language="markdown")
 
-    # ============= TAB 4: BULK STORIES =============
+    # --- Tab 4: Bulk Stories ---
     with tabs[3]:
         st.title("📊 Bulk User Stories")
         st.download_button("📥 Template", pd.DataFrame({"User Story": ["As a..."]}).to_csv(index=False), "us_template.csv")
@@ -128,13 +135,18 @@ if check_password():
             if st.button("🚀 Process Filtered Stories"):
                 results = []
                 bar = st.progress(0)
-                for i, row in filtered.iterrows():
-                    res = call_ai(f"Score Story: {row.iloc[0]}. Return ONLY JSON: {{'score': 0-30, 'note': 'str'}}")
-                    results.append({"Story": row.iloc[0], "Score": res.get('score', 'N/A') if res else "Error", "Recommendation": res.get('note', 'N/A') if res else "Error"})
-                    bar.progress((len(results)) / len(filtered))
-                st.dataframe(pd.DataFrame(results))
+                with st.spinner("Processing..."):
+                    for i, row in filtered.iterrows():
+                        res = call_ai(f"Score Story: {row.iloc[0]}. Return ONLY JSON: {{ \"score\": 25, \"note\": \"string\" }}")
+                        results.append({"Story": row.iloc[0], "Score": res.get('score', 'N/A') if res else "Error", "Recommendation": res.get('note', 'N/A') if res else "Error"})
+                        bar.progress((len(results)) / len(filtered))
+                st.success("Complete!")
+                add_to_history("📊 BULK US", up_us.name, f"{len(filtered)} rows")
+                res_df = pd.DataFrame(results)
+                st.dataframe(res_df)
+                st.download_button("📥 Download Results", res_df.to_csv(index=False), "us_results.csv")
 
-    # ============= TAB 5: BULK TESTS =============
+    # --- Tab 5: Bulk Tests ---
     with tabs[4]:
         st.title("📋 Bulk Test Cases")
         st.download_button("📥 Template", pd.DataFrame({"Test Case": ["Step 1..."]}).to_csv(index=False), "tc_template.csv")
@@ -147,8 +159,13 @@ if check_password():
             if st.button("🚀 Process Filtered Tests"):
                 results_tc = []
                 bar_tc = st.progress(0)
-                for i, row in filtered_tc.iterrows():
-                    res = call_ai(f"Score Test: {row.iloc[0]}. Return ONLY JSON: {{'score': 0-25, 'status': 'str'}}")
-                    results_tc.append({"Test Case": row.iloc[0], "Score": res.get('score', 'N/A') if res else "Error", "Status": res.get('status', 'N/A') if res else "Error"})
-                    bar_tc.progress((len(results_tc)) / len(filtered_tc))
-                st.dataframe(pd.DataFrame(results_tc))
+                with st.spinner("Analyzing..."):
+                    for i, row in filtered_tc.iterrows():
+                        res = call_ai(f"Score Test: {row.iloc[0]}. Return ONLY JSON: {{ \"score\": 20, \"status\": \"Valid\" }}")
+                        results_tc.append({"Test Case": row.iloc[0], "Score": res.get('score', 'N/A') if res else "Error", "Status": res.get('status', 'N/A') if res else "Error"})
+                        bar_tc.progress((len(results_tc)) / len(filtered_tc))
+                st.success("Complete!")
+                add_to_history("📋 BULK TC", up_tc.name, f"{len(filtered_tc)} rows")
+                res_tc_df = pd.DataFrame(results_tc)
+                st.dataframe(res_tc_df)
+                st.download_button("📥 Download Results", res_tc_df.to_csv(index=False), "tc_results.csv")
