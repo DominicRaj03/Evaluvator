@@ -5,24 +5,20 @@ import json
 import re
 import time
 
-# --- 1. UI Styling & Visual Config ---
+# --- 1. UI Styling (Matches Template) ---
 def apply_styles():
     st.markdown("""
         <style>
-        .status-header { display: flex; align-items: center; justify-content: space-between; padding: 10px; background: #262730; border-radius: 8px; margin-bottom: 20px; }
-        .stMetric { background: #1E1E2E; padding: 10px; border-radius: 8px; border: 1px solid #3E3E5E; }
-        .score-bubble { padding: 5px 10px; border-radius: 15px; font-weight: bold; color: black; }
+        .main-header { font-size: 24px; font-weight: bold; color: #1E3A8A; border-bottom: 2px solid #3B82F6; padding-bottom: 10px; margin-bottom: 20px; }
+        .score-box { background-color: #2ecc71; color: white; padding: 15px; border-radius: 8px; font-size: 28px; font-weight: bold; display: inline-block; }
+        .param-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .param-header { background-color: #3B82F6; color: white; padding: 10px; text-align: left; }
+        .recommendations { background-color: #F0F9FF; border: 1px solid #BAE6FD; padding: 15px; border-radius: 8px; margin-top: 20px; }
         </style>
     """, unsafe_allow_html=True)
 
-def get_color(score):
-    if score >= 20: return "#2ecc71" # Green
-    if score >= 10: return "#f1c40f" # Yellow
-    return "#e74c3c" # Red
-
-# --- 2. Core AI Logic (Lazy & Safe) ---
+# --- 2. Core AI Logic ---
 def call_ai(prompt, provider, model_name):
-    start_time = time.time()
     try:
         if provider == "Gemini":
             genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -35,14 +31,14 @@ def call_ai(prompt, provider, model_name):
             chat = client.chat.completions.create(messages=[{"role":"user","content":prompt}], model=model_name)
             text = chat.choices[0].message.content.strip()
 
-        st.session_state.last_latency = int((time.time() - start_time) * 1000)
+        # Extracting JSON from AI response
         json_match = re.search(r"\{.*\}", text, re.DOTALL)
-        return json.loads(json_match.group(0)) if json_match else {"score": 0, "findings": text, "tests": []}
+        return json.loads(json_match.group(0)) if json_match else None
     except Exception as e:
         st.error(f"❌ AI Error: {str(e)}")
         return None
 
-# --- 3. App Initialization ---
+# --- 3. Authentication ---
 st.set_page_config(page_title="Jarvis Evaluator", layout="wide")
 apply_styles()
 
@@ -50,74 +46,84 @@ if "password_correct" not in st.session_state:
     st.title("🎯 Jarvis AI Access")
     pwd = st.text_input("Access Key", type="password")
     if st.button("Unlock"):
-        if pwd == st.secrets["APP_PASSWORD"]: st.session_state.password_correct = True; st.rerun()
+        if pwd == st.secrets["APP_PASSWORD"]:
+            st.session_state.password_correct = True
+            st.rerun()
+        else: st.error("Invalid Key")
     st.stop()
 
-# --- 4. Sidebar Controls ---
+# --- 4. Sidebar & Config ---
 with st.sidebar:
-    st.title("⚙️ Control Panel")
-    provider = st.radio("Provider", ["Gemini", "Groq"])
+    st.title("⚙️ Settings")
+    provider = st.radio("AI Provider", ["Gemini", "Groq"])
     models = ["gemini-1.5-flash-latest", "gemini-1.5-pro-latest"] if provider == "Gemini" else ["llama-3.3-70b-versatile"]
     selected_model = st.selectbox("Model", models)
-    st.metric("Last Latency", f"{st.session_state.get('last_latency', 0)} ms")
     if st.button("🗑️ Reset Application"): st.session_state.clear(); st.rerun()
 
-st.markdown(f'<div class="status-header"><h2>📊 Jarvis AI Evaluator</h2><b>Engine: {selected_model}</b></div>', unsafe_allow_html=True)
+# --- 5. Main Application Tabs ---
+tabs = st.tabs(["📖 Story Evaluator", "🧪 Test Case Evaluator", "📝 Generator", "📊 Bulk Dashboard"])
 
-# --- 5. Main Content Tabs ---
-tabs = st.tabs(["📖 User Stories", "🧪 Test Cases", "📝 Test Generator", "📊 Bulk Evaluation"])
+# Evaluation Template Logic
+def run_evaluation(content, label):
+    prompt = f"""
+    Evaluate this {label}: '{content}'
+    Return ONLY a JSON object with:
+    'parameters': [
+        {{'name': 'Clarity', 'desc': 'Easy to understand?', 'score': 0-20}},
+        {{'name': 'Completeness', 'desc': 'Defined criteria?', 'score': 0-20}},
+        {{'name': 'Business Value', 'desc': 'Alignment with goals?', 'score': 0-20}},
+        {{'name': 'Testability', 'desc': 'Can it be verified?', 'score': 0-20}},
+        {{'name': 'Technical Feasibility', 'desc': 'Implementable?', 'score': 0-20}}
+    ],
+    'total_score': 0-100,
+    'recommendations': ['str', 'str']
+    """
+    res = call_ai(prompt, provider, selected_model)
+    if res:
+        st.markdown(f'<div class="main-header">{label} Review and Analysis</div>', unsafe_allow_html=True)
+        
+        # Display Table
+        df = pd.DataFrame(res['parameters'])
+        st.table(df.rename(columns={'name': 'Parameter', 'desc': 'Description', 'score': 'Score (out of 20)'}))
+        
+        # Display Total Score
+        st.subheader("Overall Quality Score")
+        st.markdown(f'<div class="score-box">{res["total_score"]} / 100</div>', unsafe_allow_html=True)
+        
+        # Display Recommendations
+        st.markdown('<div class="recommendations"><b>💡 Improvement Recommendations:</b>', unsafe_allow_html=True)
+        for rec in res['recommendations']:
+            st.write(f"• {rec}")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-# TAB 1 & 2: Individual Evaluation
-for i, label in enumerate(["User Story", "Test Case"]):
-    with tabs[i]:
-        content = st.text_area(f"Input {label}", height=150, placeholder=f"Enter your {label.lower()} here...")
-        if st.button(f"Evaluate {label}", type="primary"):
-            with st.spinner("Analyzing..."):
-                res = call_ai(f"Evaluate this {label}: '{content}'. Return JSON: {{'score': 0-30, 'findings': 'str'}}", provider, selected_model)
-                if res:
-                    st.divider()
-                    c1, c2 = st.columns([1, 3])
-                    c1.metric("Quality Score", f"{res['score']}/30")
-                    c2.info(f"**Findings:** {res['findings']}")
+# TAB 1 & 2: EVALUATORS
+with tabs[0]:
+    txt = st.text_area("User Story Content", height=150, placeholder="As a... I want... So that...")
+    if st.button("Evaluate Story", type="primary"): run_evaluation(txt, "User Story")
 
-# TAB 3: Test Case Generator
+with tabs[1]:
+    txt = st.text_area("Test Case Content", height=150)
+    if st.button("Evaluate Test Case", type="primary"): run_evaluation(txt, "Test Case")
+
+# TAB 3: GENERATOR
 with tabs[2]:
-    st.subheader("📝 AI Test Case Generator")
-    feature_desc = st.text_area("Describe the Feature or Requirement", height=150)
-    if st.button("Generate Test Cases"):
-        with st.spinner("Writing tests..."):
-            res = call_ai(f"Generate 5 test cases for: {feature_desc}. Return JSON: {{'tests': [{{'title': 'str', 'steps': 'str'}}]}}", provider, selected_model)
-            if res and 'tests' in res:
-                for t in res['tests']:
-                    with st.expander(t['title']): st.write(t['steps'])
+    st.subheader("📝 Generator")
+    feat = st.text_input("Enter Feature Requirement")
+    if st.button("Generate 3 Test Cases"):
+        res = call_ai(f"Generate 3 tests for {feat}. Return JSON: {{'tests':['str']}}", provider, selected_model)
+        if res: st.write(res['tests'])
 
-# TAB 4: Bulk CSV Processing & Charts
+# TAB 4: BULK UPLOAD
 with tabs[3]:
     st.subheader("📊 Bulk Evaluation Dashboard")
-    up = st.file_uploader("Upload CSV (Requirement in 1st Column)", type=['csv'])
+    up = st.file_uploader("Upload CSV", type=['csv'])
     if up:
         df = pd.read_csv(up)
-        st.write("Data Preview:")
         edited_df = st.data_editor(df, use_container_width=True)
-        
-        if st.button("🚀 Process Bulk Batch"):
-            results = []
-            progress = st.progress(0)
-            for idx, row in edited_df.iterrows():
-                out = call_ai(f"Score: {row.iloc[0]}", provider, selected_model)
-                results.append({"Item": row.iloc[0], "Score": out.get('score', 0) if out else 0, "Findings": out.get('findings', 'N/A')})
-                progress.progress((idx + 1) / len(edited_df))
-            
-            res_df = pd.DataFrame(results)
-            
-            # --- EVALUATOR CHART ---
-            st.divider()
-            col_a, col_b = st.columns([1, 1])
-            with col_a:
-                st.subheader("📈 Quality Distribution")
-                st.bar_chart(res_df.set_index("Item")["Score"])
-            with col_b:
-                st.subheader("📋 Results Table")
-                st.dataframe(res_df.style.background_gradient(subset=['Score'], cmap='RdYlGn'), use_container_width=True)
-            
-            st.download_button("📥 Export Results", res_df.to_csv(index=False), "jarvis_results.csv")
+        if st.button("🚀 Process Bulk"):
+            scores = []
+            for _, row in edited_df.iterrows():
+                # Simplified bulk score call
+                out = call_ai(f"Score 0-100: {row.iloc[0]}", provider, selected_model)
+                scores.append(out.get('total_score', 0) if out else 0)
+            st.bar_chart(scores)
